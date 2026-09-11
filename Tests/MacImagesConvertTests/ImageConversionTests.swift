@@ -85,6 +85,18 @@ final class ImageConversionTests: XCTestCase {
         XCTAssertEqual(outputs.compactMap { $0 }.count, 3)
     }
 
+    func testHEICConversionWhenAppleCodecIsAvailable() throws {
+        let source = root.appendingPathComponent("iphone.heic")
+        let context = try XCTUnwrap(CGContext(data: nil, width: 64, height: 48, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 64, height: 48))
+        guard let destination = CGImageDestinationCreateWithURL(source as CFURL, UTType.heic.identifier as CFString, 1, nil) else { throw XCTSkip("This Mac has no HEIC encoder") }
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        guard CGImageDestinationFinalize(destination) else { throw XCTSkip("This Mac has no HEIC encoder") }
+        var options = ConversionOptions(); options.format = .jpeg
+        let output = try XCTUnwrap(ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options).output)
+        XCTAssertEqual(try ImageConverter.inspect(output).sourceType, UTType.jpeg.identifier)
+    }
+
     private func makeImage(named name: String, type: UTType, width: Int = 320, height: Int = 200, gps: Bool = false, orientation: Int? = nil) throws -> URL {
         let url = root.appendingPathComponent(name)
         let colorSpace = CGColorSpaceCreateDeviceRGB()
