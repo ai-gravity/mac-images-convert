@@ -25,7 +25,7 @@ swift test
 ./scripts/build-app.sh
 ```
 
-The script creates `dist/Mac images convert-0.1.0-beta-macos-arm64.app` and its corresponding zip. It makes an `.icns` from `../../brand-assets/mac-images-convert-icon-final.png`, falling back to the supplied original image only when the final icon is absent.
+The script creates a `.dmg` installer and a `.zip` archive in `dist/`. Open the DMG and drag **Mac images convert** to Applications. The ZIP is useful when you prefer to extract the app directly.
 
 This is a beta build with an **ad-hoc signature**. It is not notarized and is not signed with a Developer ID certificate. No signing claim beyond that is made.
 
