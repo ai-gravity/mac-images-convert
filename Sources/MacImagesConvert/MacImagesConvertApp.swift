@@ -174,7 +174,31 @@ struct ContentView: View {
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private var settings: some View { Form { Section("Output") { Picker("Format", selection: $queue.options.format) { ForEach(OutputFormat.allCases) { Text($0.rawValue).tag($0) } }; Picker("Dimensions", selection: Binding(get: { queue.options.dimensions.label }, set: { chooseDimension($0) })) { Text("Original (recommended)").tag("Original"); Text("75%").tag("75%"); Text("50%").tag("50%"); Text("25%").tag("25%"); Text("2048px long edge (recommended web)").tag("2048px long edge"); Text("Custom").tag("Custom") }; if case .custom = queue.options.dimensions { VStack(alignment: .leading, spacing: 6) { Text("Custom dimensions (pixels)").font(.caption.weight(.semibold)); HStack { Text("Width").frame(width: 48, alignment: .leading); TextField("e.g. 1600", value: $queue.customWidth, format: .number).textFieldStyle(.roundedBorder).monospacedDigit(); Text("×"); Text("Height").frame(width: 52, alignment: .leading); TextField("e.g. 1200", value: $queue.customHeight, format: .number).textFieldStyle(.roundedBorder).monospacedDigit(); Button("Apply") { queue.options.dimensions = .custom(width: queue.customWidth, height: queue.customHeight) }.buttonStyle(.bordered) } Text("The converted image will be at most this width × height.").font(.caption2).foregroundStyle(.secondary) } }; if queue.options.format == .jpeg { Picker("JPEG quality", selection: $queue.options.jpegQuality) { ForEach(JPEGQuality.allCases) { Text($0.rawValue + ($0 == .high ? " (recommended)" : "")).tag($0) } } } }
+    private var settings: some View {
+        Form {
+            Section("Output") {
+                Picker("Format", selection: $queue.options.format) { ForEach(OutputFormat.allCases) { Text($0.rawValue).tag($0) } }
+                Picker("Dimensions", selection: Binding(get: { queue.options.dimensions.label }, set: { chooseDimension($0) })) {
+                    Text("Original (recommended)").tag("Original")
+                    Text("75%").tag("75%"); Text("50%").tag("50%"); Text("25%").tag("25%")
+                    Text("2048px long edge (recommended web)").tag("2048px long edge"); Text("Custom").tag("Custom")
+                }
+                if case .custom = queue.options.dimensions {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Custom dimensions (pixels)").font(.caption.weight(.semibold))
+                        HStack {
+                            Text("Width").frame(width: 48, alignment: .leading)
+                            TextField("e.g. 1600", value: $queue.customWidth, format: .number).textFieldStyle(.roundedBorder).monospacedDigit()
+                            Text("×")
+                            Text("Height").frame(width: 52, alignment: .leading)
+                            TextField("e.g. 1200", value: $queue.customHeight, format: .number).textFieldStyle(.roundedBorder).monospacedDigit()
+                            Button("Apply") { queue.options.dimensions = .custom(width: queue.customWidth, height: queue.customHeight) }.buttonStyle(.bordered)
+                        }
+                        Text("The converted image will be at most this width × height.").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if queue.options.format == .jpeg { Picker("JPEG quality", selection: $queue.options.jpegQuality) { ForEach(JPEGQuality.allCases) { Text($0.rawValue + ($0 == .high ? " (recommended)" : "")).tag($0) } } }
+            }
             Section("Maximum file size per image") { Toggle("Limit output file size", isOn: Binding(get: { queue.options.sizeCap != nil }, set: { enabled in queue.options.sizeCap = enabled ? SizeCap(bytes: 2_000_000) : nil; if enabled { queue.sizeCapPreset = "2.0 MB" } })); if queue.options.sizeCap != nil { Picker("Limit", selection: Binding(get: { queue.sizeCapPreset }, set: { queue.sizeCapPreset = $0; chooseCap($0) })) { Text("500 KB").tag("500 KB"); Text("1 MB").tag("1.0 MB"); Text("2 MB (recommended)").tag("2.0 MB"); Text("5 MB").tag("5.0 MB"); Text("Custom").tag("Custom") }; if queue.sizeCapPreset == "Custom" { VStack(alignment: .leading, spacing: 6) { Text("Custom maximum size").font(.caption.weight(.semibold)); HStack { TextField("e.g. 2", value: $queue.customCap, format: .number).textFieldStyle(.roundedBorder).monospacedDigit(); Picker("Unit", selection: $queue.customCapUnit) { Text("KB").tag("KB"); Text("MB").tag("MB") }.labelsHidden(); Button("Apply") { queue.options.sizeCap = SizeCap(bytes: Int(queue.customCap * (queue.customCapUnit == "MB" ? 1_000_000 : 1_000))) }.buttonStyle(.bordered) } } }; Toggle("Reduce dimensions automatically if needed", isOn: Binding(get: { queue.options.sizeCap?.allowDownsizing ?? true }, set: { newValue in if var cap = queue.options.sizeCap { cap.allowDownsizing = newValue; queue.options.sizeCap = cap } })); Text("The app applies your Dimension choice first, then lowers JPEG quality and, when enabled, dimensions until the file fits this limit. These are two separate controls.").font(.caption2).foregroundStyle(.secondary) } }
             Section("Privacy") { Toggle("Hide where photos were taken", isOn: $queue.options.removeLocation); Text("Removes embedded GPS locations. It cannot hide landmarks or addresses visible in the photo.").font(.caption).foregroundStyle(.secondary) }
             Section("Originals") { Toggle("Move originals to Trash after conversion", isOn: Binding(get: { queue.options.moveOriginalToTrash }, set: { if $0 { showTrashWarning = true } else { queue.options.moveOriginalToTrash = false } })).tint(.orange) }
