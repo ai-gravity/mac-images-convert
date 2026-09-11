@@ -1,0 +1,119 @@
+import CoreGraphics
+import Foundation
+import ImageIO
+import MacImagesConvertCore
+import UniformTypeIdentifiers
+import XCTest
+
+final class ImageConversionTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("MacImagesConvertTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+
+    func testJPEGConversionStripsGPSAndRespectsFormat() throws {
+        let source = try makeImage(named: "camera.png", type: .png, gps: true)
+        var options = ConversionOptions(); options.format = .jpeg; options.removeLocation = true
+        let result = try ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options)
+        let output = try XCTUnwrap(result.output)
+        XCTAssertEqual(output.pathExtension, "jpg")
+        let inspected = try ImageConverter.inspect(output)
+        XCTAssertEqual(inspected.sourceType, UTType.jpeg.identifier)
+        let imageSource = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let metadata = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+        XCTAssertNil(metadata?[kCGImagePropertyGPSDictionary])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path), "conversion must not touch originals by default")
+    }
+
+    func testSizeCapDownsizesAndVerifiesActualBytes() throws {
+        let source = try makeImage(named: "large.png", type: .png, width: 1600, height: 1000)
+        var options = ConversionOptions(); options.format = .jpeg; options.jpegQuality = .maximum; options.sizeCap = SizeCap(bytes: 25_000, allowDownsizing: true)
+        let result = try ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options)
+        let output = try XCTUnwrap(result.output)
+        XCTAssertLessThanOrEqual(try ImageConverter.inspect(output).byteCount, 25_000)
+    }
+
+    func testCapFailsWhenDownsizingIsDisabled() throws {
+        let source = try makeImage(named: "uncapped.png", type: .png, width: 800, height: 600)
+        var options = ConversionOptions(); options.format = .jpeg; options.sizeCap = SizeCap(bytes: 500, allowDownsizing: false)
+        XCTAssertThrowsError(try ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options)) { error in
+            XCTAssertEqual(error as? ConversionError, .cannotMeetSizeCap)
+        }
+    }
+
+    func testOrientationIsAppliedToOutputPixels() throws {
+        let source = try makeImage(named: "rotated.jpg", type: .jpeg, width: 80, height: 40, orientation: 6)
+        var options = ConversionOptions(); options.format = .png
+        let result = try ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options)
+        let output = try XCTUnwrap(result.output)
+        let inspected = try ImageConverter.inspect(output)
+        XCTAssertEqual(inspected.pixelWidth, 40)
+        XCTAssertEqual(inspected.pixelHeight, 80)
+    }
+
+    func testCollisionGeneratesSafeName() throws {
+        let source = try makeImage(named: "same.png", type: .png)
+        let destination = root.appendingPathComponent("out")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let existing = destination.appendingPathComponent("same.jpg")
+        try Data("do not overwrite".utf8).write(to: existing)
+        var options = ConversionOptions(); options.format = .jpeg
+        let result = try ImageConverter.convert(source, destination: destination, options: options)
+        XCTAssertEqual(try XCTUnwrap(result.output).lastPathComponent, "same 1.jpg")
+        XCTAssertEqual(try Data(contentsOf: existing), Data("do not overwrite".utf8))
+    }
+
+    func testMultiFrameInputIsRejected() throws {
+        let source = try makeAnimatedGIF(named: "animated.gif")
+        var options = ConversionOptions(); options.format = .png
+        XCTAssertThrowsError(try ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options)) { error in
+            guard case .multiFrame(let count) = error as? ConversionError else { return XCTFail("Expected multi-frame error") }
+            XCTAssertEqual(count, 2)
+        }
+    }
+
+    func testUnreadableFailureAndBatchOfFixtures() throws {
+        let bad = root.appendingPathComponent("not-an-image.jpg"); try Data("plain text".utf8).write(to: bad)
+        XCTAssertThrowsError(try ImageConverter.inspect(bad))
+        let destination = root.appendingPathComponent("out")
+        var options = ConversionOptions(); options.format = .png
+        let inputs = try (0..<3).map { try makeImage(named: "batch-\($0).jpg", type: .jpeg) }
+        let outputs = try inputs.map { try ImageConverter.convert($0, destination: destination, options: options).output }
+        XCTAssertEqual(outputs.compactMap { $0 }.count, 3)
+    }
+
+    private func makeImage(named name: String, type: UTType, width: Int = 320, height: Int = 200, gps: Bool = false, orientation: Int? = nil) throws -> URL {
+        let url = root.appendingPathComponent(name)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        // A deterministic per-pixel pattern resists trivial compression and exercises cap handling.
+        for y in stride(from: 0, to: height, by: 8) {
+            for x in stride(from: 0, to: width, by: 8) {
+                context.setFillColor(CGColor(red: CGFloat((x * 19 + y * 7) % 255) / 255, green: CGFloat((x * 3 + y * 29) % 255) / 255, blue: CGFloat((x * 11 + y * 5) % 255) / 255, alpha: 1))
+                context.fill(CGRect(x: x, y: y, width: 8, height: 8))
+            }
+        }
+        let image = try XCTUnwrap(context.makeImage())
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, type.identifier as CFString, 1, nil))
+        var properties: [CFString: Any] = [:]
+        if gps { properties[kCGImagePropertyGPSDictionary] = [kCGImagePropertyGPSLatitude: 13.7563, kCGImagePropertyGPSLongitude: 100.5018] }
+        if let orientation { properties[kCGImagePropertyOrientation] = orientation }
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    private func makeAnimatedGIF(named name: String) throws -> URL {
+        let url = root.appendingPathComponent(name)
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, 2, nil))
+        for index in 0..<2 {
+            let context = try XCTUnwrap(CGContext(data: nil, width: 20, height: 20, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(index == 0 ? CGColor(red: 1, green: 0, blue: 0, alpha: 1) : CGColor(red: 0, green: 0, blue: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.1]] as CFDictionary)
+        }
+        XCTAssertTrue(CGImageDestinationFinalize(destination)); return url
+    }
+}
