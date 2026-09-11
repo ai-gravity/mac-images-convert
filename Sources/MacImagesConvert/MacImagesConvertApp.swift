@@ -188,10 +188,11 @@ struct ContentView: View {
                         Text("Custom dimensions (pixels)").font(.caption.weight(.semibold))
                         HStack {
                             Text("Width").frame(width: 48, alignment: .leading)
-                            TextField("e.g. 1600", value: $queue.customWidth, format: .number).textFieldStyle(.roundedBorder).monospacedDigit()
+                            TextField("1600", value: $queue.customWidth, format: .number).textFieldStyle(.roundedBorder).frame(minWidth: 92).monospacedDigit().multilineTextAlignment(.trailing).help("Enter maximum width in pixels")
                             Text("×")
                             Text("Height").frame(width: 52, alignment: .leading)
-                            TextField("e.g. 1200", value: $queue.customHeight, format: .number).textFieldStyle(.roundedBorder).monospacedDigit()
+                            TextField("1200", value: $queue.customHeight, format: .number).textFieldStyle(.roundedBorder).frame(minWidth: 92).monospacedDigit().multilineTextAlignment(.trailing).help("Enter maximum height in pixels")
+                            Text("px").foregroundStyle(.secondary)
                             Button("Apply") { queue.options.dimensions = .custom(width: queue.customWidth, height: queue.customHeight) }.buttonStyle(.bordered)
                         }
                         Text("The converted image will be at most this width × height.").font(.caption2).foregroundStyle(.secondary)
