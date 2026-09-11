@@ -166,7 +166,10 @@ public enum ImageConverter {
         case .original: return original
         case .percentage(let ratio): guard ratio > 0 else { throw ConversionError.invalidDimensions }; return CGSize(width: max(1, floor(original.width * ratio)), height: max(1, floor(original.height * ratio)))
         case .longEdge(let edge): guard edge > 0 else { throw ConversionError.invalidDimensions }; let ratio = min(1, CGFloat(edge) / max(original.width, original.height)); return CGSize(width: max(1, floor(original.width * ratio)), height: max(1, floor(original.height * ratio)))
-        case .custom(let width, let height): guard width > 0, height > 0 else { throw ConversionError.invalidDimensions }; return CGSize(width: width, height: height)
+        case .custom(let width, let height):
+            guard width > 0, height > 0 else { throw ConversionError.invalidDimensions }
+            let ratio = min(1, min(CGFloat(width) / original.width, CGFloat(height) / original.height))
+            return CGSize(width: max(1, floor(original.width * ratio)), height: max(1, floor(original.height * ratio)))
         }
     }
 

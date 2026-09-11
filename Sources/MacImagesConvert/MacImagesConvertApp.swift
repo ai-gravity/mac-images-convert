@@ -17,7 +17,7 @@ struct MacImagesConvertApp: App {
     @StateObject private var queue = ConversionQueue()
 
     var body: some Scene {
-        WindowGroup("Mac images convert") { ContentView().environmentObject(queue).frame(minWidth: 900, minHeight: 620) }
+        WindowGroup("Mac images convert") { ContentView().environmentObject(queue).frame(minWidth: 760, minHeight: 580) }
             .commands { CommandGroup(replacing: .newItem) { Button("Add Images…") { queue.chooseFiles() }.keyboardShortcut("o") } }
         Settings { SettingsView().environmentObject(queue) }
     }
@@ -42,6 +42,8 @@ final class ConversionQueue: ObservableObject {
     struct Job: Identifiable {
         enum State: Equatable { case ready, converting, completed(URL), failed(String), skipped(String) }
         let id = UUID(); let url: URL; var inspection: ImageInspection?; var state: State = .ready
+        var outputInspection: ImageInspection?
+        var isWatched = false
     }
     @Published var jobs: [Job] = []
     @Published var destination: URL?
@@ -49,11 +51,12 @@ final class ConversionQueue: ObservableObject {
     @Published var isRunning = false
     @Published var isPaused = false
     @Published var watcher = WatchFolderMonitor()
-    @Published var customWidth = 1600
-    @Published var customHeight = 1200
-    @Published var customCap = 2.0
-    @Published var customCapUnit = "MB"
-    @Published var sizeCapPreset = "2.0 MB"
+    @Published var setup = ConversionSetup()
+    @Published var message: String?
+    var validationMessage: String? {
+        do { _ = try setup.resolved(from: options); return nil }
+        catch { return error.localizedDescription }
+    }
     private var cancellationFlag = CancellationFlag()
 
     init() {
@@ -88,31 +91,49 @@ final class ConversionQueue: ObservableObject {
         }
         for url in incoming where !jobs.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
             let inspected = try? ImageConverter.inspect(url)
-            jobs.append(Job(url: url, inspection: inspected, state: inspected == nil ? .skipped("Unreadable") : .ready))
+            jobs.append(Job(url: url, inspection: inspected, state: inspected == nil ? .skipped("Unreadable") : .ready, isWatched: !includeExisting))
         }
     }
     func retryFailures() { for index in jobs.indices { if case .failed = jobs[index].state { jobs[index].state = .ready } } }
     func cancel() { cancellationFlag.cancel(); isPaused = false }
     func start() {
-        guard let destination, !isRunning else { return }
+        guard !isRunning else { return }
+        guard let destination else { chooseDestination(); return }
+        let resolved: ConversionOptions
+        do { resolved = try setup.resolved(from: options) }
+        catch { message = error.localizedDescription; return }
         cancellationFlag = CancellationFlag(); let cancellationFlag = cancellationFlag; isRunning = true
-        let options = options
+        message = nil
         Task {
             // Deliberately serial: it bounds memory while decoding large camera images.
             while !cancellationFlag.isCancelled, let index = jobs.indices.first(where: { if case .ready = jobs[$0].state { true } else { false } }) {
                 while isPaused && !cancellationFlag.isCancelled { try? await Task.sleep(for: .milliseconds(150)) }
                 if cancellationFlag.isCancelled { break }
                 let source = jobs[index].url; jobs[index].state = .converting
+                var jobOptions = resolved
+                if jobs[index].isWatched { jobOptions.moveOriginalToTrash = false }
+                let options = jobOptions
                 let result = await Task.detached(priority: .userInitiated) { () -> Result<ConversionResult, Error> in
                     Result { try ImageConverter.convert(source, destination: destination, options: options, shouldCancel: { cancellationFlag.isCancelled }) }
                 }.value
-                if cancellationFlag.isCancelled { jobs[index].state = .ready; break }
                 switch result {
-                case .success(let success): jobs[index].state = .completed(success.output!)
-                case .failure(let error): jobs[index].state = .failed(error.localizedDescription)
+                case .success(let success):
+                    if let output = success.output {
+                        jobs[index].state = .completed(output)
+                        jobs[index].outputInspection = try? ImageConverter.inspect(output)
+                    }
+                case .failure(let error):
+                    if error as? ConversionError == .cancelled { jobs[index].state = .ready }
+                    else { jobs[index].state = .failed(error.localizedDescription) }
                 }
             }
             isRunning = false
+        }
+    }
+    func convertAgain() {
+        guard !isRunning else { return }
+        for index in jobs.indices where FileManager.default.fileExists(atPath: jobs[index].url.path) {
+            jobs[index].state = .ready; jobs[index].outputInspection = nil
         }
     }
     func clearFinished() { jobs.removeAll { if case .ready = $0.state { false } else if case .converting = $0.state { false } else { true } } }
@@ -121,95 +142,6 @@ final class ConversionQueue: ObservableObject {
         guard panel.runModal() == .OK, let folder = panel.url else { return }
         watcher.start(folder: folder, excluding: destination) { [weak self] urls in Task { @MainActor in self?.enqueue(urls, includeExisting: false) } }
     }
-}
-
-struct ContentView: View {
-    @EnvironmentObject private var queue: ConversionQueue
-    @State private var showTrashWarning = false
-    var body: some View {
-        NavigationSplitView {
-            List { Label("Conversion", systemImage: "arrow.triangle.2.circlepath") }.navigationTitle("Mac images convert")
-        } detail: {
-            VStack(spacing: 0) {
-                header
-                Divider()
-                HStack(alignment: .top, spacing: 20) { files; settings }.padding(20)
-                Divider(); footer.padding(16)
-            }
-            .toolbar { ToolbarItem(placement: .primaryAction) { Button("Add images", systemImage: "plus") { queue.chooseFiles() } } }
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                for provider in providers {
-                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                        if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            Task { @MainActor in queue.enqueue([url]) }
-                        }
-                    }
-                }
-                return true
-            }
-            .alert("Move originals to Trash?", isPresented: $showTrashWarning) { Button("Keep enabled", role: .destructive) { queue.options.moveOriginalToTrash = true }; Button("Cancel", role: .cancel) { queue.options.moveOriginalToTrash = false } } message: { Text("Original files leave their folders only after a converted copy is saved and checked. Emptying Trash deletes them permanently; synced folders may sync the removal.") }
-        }
-    }
-    private var header: some View { HStack { VStack(alignment: .leading) { Text("Convert images locally").font(.title2.weight(.semibold)); Text("HEIC, JPEG, PNG, and static WebP. Nothing is uploaded.").foregroundStyle(.secondary) }; Spacer(); if queue.isRunning { ProgressView(value: queue.progress).frame(width: 160); Text("\(Int(queue.progress * 100))%") } }.padding(20) }
-    private var files: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack { Text("Images").font(.headline); Spacer(); Button("Add files…") { queue.chooseFiles() }; Button("Clear finished") { queue.clearFinished() }.disabled(queue.isRunning) }
-            if queue.jobs.isEmpty {
-                ContentUnavailableView("Drop images or folders here", systemImage: "photo.on.rectangle.angled", description: Text("Folders are scanned for supported image files."))
-            } else {
-                List(queue.jobs) { job in
-                    HStack {
-                        Image(systemName: symbol(for: job.state)).foregroundStyle(color(for: job.state))
-                        VStack(alignment: .leading) {
-                            Text(job.url.lastPathComponent)
-                            if let info = job.inspection {
-                                let frames = info.frameCount == 1 ? "one frame" : "\(info.frameCount) frames"
-                                Text("\(info.bytesText) · \(info.dimensionsText) · \(frames)").font(.caption).foregroundStyle(.secondary)
-                            }
-                            if case .failed(let message) = job.state { Text(message).font(.caption).foregroundStyle(.red) }
-                        }
-                        Spacer(); Text(status(for: job.state)).font(.caption).foregroundStyle(.secondary)
-                    }
-                }.frame(minHeight: 300)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private var settings: some View {
-        Form {
-            Section("Output") {
-                Picker("Format", selection: $queue.options.format) { ForEach(OutputFormat.allCases) { Text($0.rawValue).tag($0) } }
-                Picker("Dimensions", selection: Binding(get: { queue.options.dimensions.label }, set: { chooseDimension($0) })) {
-                    Text("Original (recommended)").tag("Original")
-                    Text("75%").tag("75%"); Text("50%").tag("50%"); Text("25%").tag("25%")
-                    Text("2048px long edge (recommended web)").tag("2048px long edge"); Text("Custom").tag("Custom")
-                }
-                if case .custom = queue.options.dimensions {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Custom dimensions (pixels)").font(.caption.weight(.semibold))
-                        HStack {
-                            Text("Width").frame(width: 48, alignment: .leading)
-                            TextField("1600", value: $queue.customWidth, format: .number).textFieldStyle(.roundedBorder).frame(minWidth: 92).monospacedDigit().multilineTextAlignment(.trailing).help("Enter maximum width in pixels")
-                            Text("×")
-                            Text("Height").frame(width: 52, alignment: .leading)
-                            TextField("1200", value: $queue.customHeight, format: .number).textFieldStyle(.roundedBorder).frame(minWidth: 92).monospacedDigit().multilineTextAlignment(.trailing).help("Enter maximum height in pixels")
-                            Text("px").foregroundStyle(.secondary)
-                            Button("Apply") { queue.options.dimensions = .custom(width: queue.customWidth, height: queue.customHeight) }.buttonStyle(.bordered)
-                        }
-                        Text("The converted image will be at most this width × height.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                if queue.options.format == .jpeg { Picker("JPEG quality", selection: $queue.options.jpegQuality) { ForEach(JPEGQuality.allCases) { Text($0.rawValue + ($0 == .high ? " (recommended)" : "")).tag($0) } } }
-            }
-            Section("Maximum file size per image") { Toggle("Limit output file size", isOn: Binding(get: { queue.options.sizeCap != nil }, set: { enabled in queue.options.sizeCap = enabled ? SizeCap(bytes: 2_000_000) : nil; if enabled { queue.sizeCapPreset = "2.0 MB" } })); if queue.options.sizeCap != nil { Picker("Limit", selection: Binding(get: { queue.sizeCapPreset }, set: { queue.sizeCapPreset = $0; chooseCap($0) })) { Text("500 KB").tag("500 KB"); Text("1 MB").tag("1.0 MB"); Text("2 MB (recommended)").tag("2.0 MB"); Text("5 MB").tag("5.0 MB"); Text("Custom").tag("Custom") }; if queue.sizeCapPreset == "Custom" { VStack(alignment: .leading, spacing: 6) { Text("Custom maximum size").font(.caption.weight(.semibold)); HStack { TextField("e.g. 2", value: $queue.customCap, format: .number).textFieldStyle(.roundedBorder).monospacedDigit(); Picker("Unit", selection: $queue.customCapUnit) { Text("KB").tag("KB"); Text("MB").tag("MB") }.labelsHidden(); Button("Apply") { queue.options.sizeCap = SizeCap(bytes: Int(queue.customCap * (queue.customCapUnit == "MB" ? 1_000_000 : 1_000))) }.buttonStyle(.bordered) } } }; Toggle("Reduce dimensions automatically if needed", isOn: Binding(get: { queue.options.sizeCap?.allowDownsizing ?? true }, set: { newValue in if var cap = queue.options.sizeCap { cap.allowDownsizing = newValue; queue.options.sizeCap = cap } })); Text("The app applies your Dimension choice first, then lowers JPEG quality and, when enabled, dimensions until the file fits this limit. These are two separate controls.").font(.caption2).foregroundStyle(.secondary) } }
-            Section("Privacy") { Toggle("Hide where photos were taken", isOn: $queue.options.removeLocation); Text("Removes embedded GPS locations. It cannot hide landmarks or addresses visible in the photo.").font(.caption).foregroundStyle(.secondary) }
-            Section("Originals") { Toggle("Move originals to Trash after conversion", isOn: Binding(get: { queue.options.moveOriginalToTrash }, set: { if $0 { showTrashWarning = true } else { queue.options.moveOriginalToTrash = false } })).tint(.orange) }
-        }.frame(width: 370).formStyle(.grouped) }
-    private var footer: some View { HStack { VStack(alignment: .leading, spacing: 3) { Label(queue.destination == nil ? "Choose where converted files will be saved" : "Save converted files to", systemImage: "folder").font(.subheadline.weight(.semibold)); Text(queue.destination?.path ?? "No folder selected yet").font(.caption).foregroundStyle(queue.destination == nil ? .orange : .secondary).lineLimit(1) }; Spacer(); Button(queue.destination == nil ? "Choose destination folder…" : "Change destination folder…") { queue.chooseDestination() }.buttonStyle(.bordered); if queue.isRunning { Button(queue.isPaused ? "Resume" : "Pause") { queue.isPaused.toggle() }; Button("Cancel", role: .destructive) { queue.cancel() } } else { Button("Convert \(queue.readyCount) image\(queue.readyCount == 1 ? "" : "s")") { queue.start() }.buttonStyle(.borderedProminent).disabled(queue.destination == nil || queue.readyCount == 0) } } }
-    private func chooseDimension(_ value: String) { switch value { case "Original": queue.options.dimensions = .original; case "75%": queue.options.dimensions = .percentage(0.75); case "50%": queue.options.dimensions = .percentage(0.5); case "25%": queue.options.dimensions = .percentage(0.25); case "2048px long edge": queue.options.dimensions = .longEdge(2048); default: queue.options.dimensions = .custom(width: queue.customWidth, height: queue.customHeight) } }
-    private func chooseCap(_ value: String) { switch value { case "500 KB": queue.options.sizeCap = SizeCap(bytes: 500_000); case "1.0 MB": queue.options.sizeCap = SizeCap(bytes: 1_000_000); case "2.0 MB": queue.options.sizeCap = SizeCap(bytes: 2_000_000); case "5.0 MB": queue.options.sizeCap = SizeCap(bytes: 5_000_000); default: queue.options.sizeCap = SizeCap(bytes: Int(queue.customCap * 1_000_000)) } }
-    private func status(for state: ConversionQueue.Job.State) -> String { switch state { case .ready: "Ready"; case .converting: "Converting"; case .completed: "Done"; case .failed: "Failed"; case .skipped: "Skipped" } }
-    private func symbol(for state: ConversionQueue.Job.State) -> String { switch state { case .ready: "photo"; case .converting: "arrow.triangle.2.circlepath"; case .completed: "checkmark.circle.fill"; case .failed: "exclamationmark.triangle.fill"; case .skipped: "xmark.circle" } }
-    private func color(for state: ConversionQueue.Job.State) -> Color { switch state { case .completed: .green; case .failed: .red; case .skipped: .secondary; default: .blue } }
 }
 
 struct SettingsView: View { @EnvironmentObject private var queue: ConversionQueue; var body: some View { Form { Section("Watch folder") { if let folder = queue.watcher.folder { Text(folder.path); Button("Stop watching", role: .destructive) { queue.watcher.stop() } } else { Text("While this app is open, add stable new files from a selected folder.").foregroundStyle(.secondary); Button("Choose watch folder…") { queue.startWatchFolder() } }; Text("Existing files are ignored when a watch starts. Output folders are excluded, and watched jobs never move originals to Trash.").font(.caption).foregroundStyle(.secondary) } }.padding(20).frame(width: 440) } }

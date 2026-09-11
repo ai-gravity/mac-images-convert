@@ -97,6 +97,56 @@ final class ImageConversionTests: XCTestCase {
         XCTAssertEqual(try ImageConverter.inspect(output).sourceType, UTType.jpeg.identifier)
     }
 
+    func testCustomBoundsKeepProportionsAndNeverEnlarge() throws {
+        let source = try makeImage(named: "landscape.png", type: .png, width: 400, height: 300)
+        var setup = ConversionSetup()
+        setup.purpose = .resize; setup.resizePreset = "Custom"
+        setup.width = "160"; setup.height = "100"
+        let options = try setup.resolved(from: ConversionOptions())
+        let output = try XCTUnwrap(ImageConverter.convert(source, destination: root.appendingPathComponent("bounds"), options: options).output)
+        let info = try ImageConverter.inspect(output)
+        XCTAssertEqual(info.pixelWidth, 133); XCTAssertEqual(info.pixelHeight, 100)
+        setup.width = "1600"; setup.height = "1000"
+        let larger = try XCTUnwrap(ImageConverter.convert(source, destination: root.appendingPathComponent("larger"), options: setup.resolved(from: ConversionOptions())).output)
+        XCTAssertEqual(try ImageConverter.inspect(larger).pixelWidth, 400)
+        XCTAssertEqual(try ImageConverter.inspect(larger).pixelHeight, 300)
+    }
+
+    func testPortraitBoundsAndActualUploadLimit() throws {
+        let source = try makeImage(named: "portrait.png", type: .png, width: 600, height: 800)
+        var setup = ConversionSetup(); setup.purpose = .resize; setup.resizePreset = "Custom"
+        setup.width = "400"; setup.height = "400"
+        let sized = try XCTUnwrap(ImageConverter.convert(source, destination: root.appendingPathComponent("resize"), options: setup.resolved(from: ConversionOptions())).output)
+        let info = try ImageConverter.inspect(sized)
+        XCTAssertEqual(info.pixelWidth, 300); XCTAssertEqual(info.pixelHeight, 400)
+        setup.purpose = .upload; setup.limitPreset = "Custom"; setup.limit = "10"; setup.unit = "KB"
+        for format in OutputFormat.allCases {
+            var base = ConversionOptions(); base.format = format
+            let output = try XCTUnwrap(ImageConverter.convert(source, destination: root.appendingPathComponent(format.rawValue), options: setup.resolved(from: base)).output)
+            let inspected = try ImageConverter.inspect(output)
+            XCTAssertLessThanOrEqual(inspected.byteCount, 10_000)
+            XCTAssertLessThanOrEqual(inspected.pixelWidth, 600)
+            XCTAssertLessThanOrEqual(inspected.pixelHeight, 800)
+        }
+    }
+
+    func testSwitchingPurposeIgnoresHiddenSettings() throws {
+        var setup = ConversionSetup(); setup.purpose = .upload; setup.limitPreset = "Custom"
+        setup.limit = "500"; setup.unit = "KB"; setup.resizePreset = "Custom"; setup.width = "bad"
+        var base = ConversionOptions(); base.dimensions = .custom(width: 1, height: 1); base.sizeCap = SizeCap(bytes: 1)
+        let upload = try setup.resolved(from: base)
+        XCTAssertEqual(upload.dimensions, .original); XCTAssertEqual(upload.sizeCap?.bytes, 500_000)
+        setup.purpose = .convert
+        XCTAssertNil(try setup.resolved(from: base).sizeCap)
+        XCTAssertEqual(try setup.resolved(from: base).dimensions, .original)
+        setup.purpose = .resize; setup.width = "123"; setup.height = "456"
+        XCTAssertEqual(try setup.resolved(from: base).dimensions, .custom(width: 123, height: 456))
+        XCTAssertNil(try setup.resolved(from: base).sizeCap)
+        setup.width = ""; XCTAssertThrowsError(try setup.resolved(from: base))
+        setup.purpose = .upload; setup.limit = "nan"; XCTAssertThrowsError(try setup.resolved(from: base))
+        setup.limit = "-2"; XCTAssertThrowsError(try setup.resolved(from: base))
+    }
+
     private func makeImage(named name: String, type: UTType, width: Int = 320, height: Int = 200, gps: Bool = false, orientation: Int? = nil) throws -> URL {
         let url = root.appendingPathComponent(name)
         let colorSpace = CGColorSpaceCreateDeviceRGB()
