@@ -129,11 +129,13 @@ public enum ImageConverter {
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw ConversionError.unreadable(sourceURL.lastPathComponent) }
         let properties = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
         let orientationRaw = (properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
-        let oriented = try orient(image, orientation: CGImagePropertyOrientation(rawValue: orientationRaw) ?? .up)
-        let target = try targetSize(for: oriented, preset: options.dimensions)
-        var working = try resize(oriented, to: target)
+        let orientation = CGImagePropertyOrientation(rawValue: orientationRaw) ?? .up
+        let swapsAxes = orientation == .left || orientation == .right || orientation == .leftMirrored || orientation == .rightMirrored
+        let displayedSize = CGSize(width: swapsAxes ? image.height : image.width, height: swapsAxes ? image.width : image.height)
+        let target = try targetSize(for: displayedSize, preset: options.dimensions)
+        var working = try decodedImage(from: source, maximumPixelSize: Int(max(target.width, target.height)))
         var data: Data?
-        var finalSize = target
+        var finalSize = CGSize(width: working.width, height: working.height)
         for _ in 0..<20 {
             if shouldCancel() { throw ConversionError.cancelled }
             data = try encodedData(image: working, format: options.format, quality: options.jpegQuality.value, properties: sanitized(properties, removeLocation: options.removeLocation), cap: options.sizeCap?.bytes)
@@ -142,8 +144,10 @@ public enum ImageConverter {
                 let scale = max(0.5, min(0.92, sqrt(Double(cap.bytes) / Double(data.count)) * 0.96))
                 let next = CGSize(width: max(1, floor(finalSize.width * scale)), height: max(1, floor(finalSize.height * scale)))
                 guard next.width < finalSize.width || next.height < finalSize.height else { throw ConversionError.cannotMeetSizeCap }
-                finalSize = next
-                working = try resize(oriented, to: finalSize)
+                let resized = try decodedImage(from: source, maximumPixelSize: Int(max(next.width, next.height)))
+                guard resized.width < working.width || resized.height < working.height else { throw ConversionError.cannotMeetSizeCap }
+                working = resized
+                finalSize = CGSize(width: working.width, height: working.height)
                 continue
             }
             break
@@ -160,8 +164,7 @@ public enum ImageConverter {
         return ConversionResult(source: sourceURL, output: output, inspection: inspection, error: nil)
     }
 
-    private static func targetSize(for image: CGImage, preset: DimensionPreset) throws -> CGSize {
-        let original = CGSize(width: image.width, height: image.height)
+    private static func targetSize(for original: CGSize, preset: DimensionPreset) throws -> CGSize {
         switch preset {
         case .original: return original
         case .percentage(let ratio): guard ratio > 0 else { throw ConversionError.invalidDimensions }; return CGSize(width: max(1, floor(original.width * ratio)), height: max(1, floor(original.height * ratio)))
@@ -173,34 +176,17 @@ public enum ImageConverter {
         }
     }
 
-    private static func resize(_ image: CGImage, to size: CGSize) throws -> CGImage {
-        let width = Int(size.width), height = Int(size.height)
-        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ConversionError.encodingFailed }
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(origin: .zero, size: size))
-        guard let result = context.makeImage() else { throw ConversionError.encodingFailed }
-        return result
-    }
-
-    private static func orient(_ image: CGImage, orientation: CGImagePropertyOrientation) throws -> CGImage {
-        if orientation == .up { return image }
-        let swaps = orientation == .left || orientation == .right || orientation == .leftMirrored || orientation == .rightMirrored
-        let size = CGSize(width: swaps ? image.height : image.width, height: swaps ? image.width : image.height)
-        guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ConversionError.encodingFailed }
-        switch orientation {
-        case .upMirrored: context.translateBy(x: size.width, y: 0); context.scaleBy(x: -1, y: 1)
-        case .down: context.translateBy(x: size.width, y: size.height); context.rotate(by: .pi)
-        case .downMirrored: context.translateBy(x: 0, y: size.height); context.scaleBy(x: 1, y: -1)
-        case .leftMirrored: context.translateBy(x: size.width, y: 0); context.rotate(by: .pi / 2); context.scaleBy(x: -1, y: 1)
-        case .right: context.translateBy(x: size.width, y: 0); context.rotate(by: .pi / 2)
-        case .rightMirrored: context.translateBy(x: size.width, y: size.height); context.rotate(by: .pi / 2); context.scaleBy(x: -1, y: 1)
-        case .left: context.translateBy(x: 0, y: size.height); context.rotate(by: -.pi / 2)
-        default: break
+    private static func decodedImage(from source: CGImageSource, maximumPixelSize: Int) throws -> CGImage {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maximumPixelSize),
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw ConversionError.encodingFailed
         }
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        guard let result = context.makeImage() else { throw ConversionError.encodingFailed }
-        return result
+        return image
     }
 
     private static func sanitized(_ source: [CFString: Any], removeLocation: Bool) -> [CFString: Any] {

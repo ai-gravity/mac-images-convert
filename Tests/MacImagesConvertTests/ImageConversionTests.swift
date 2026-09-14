@@ -44,14 +44,24 @@ final class ImageConversionTests: XCTestCase {
         }
     }
 
-    func testOrientationIsAppliedToOutputPixels() throws {
-        let source = try makeImage(named: "rotated.jpg", type: .jpeg, width: 80, height: 40, orientation: 6)
+    func testAllEXIFOrientationsMatchPlatformRenderedPixels() throws {
         var options = ConversionOptions(); options.format = .png
-        let result = try ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options)
-        let output = try XCTUnwrap(result.output)
-        let inspected = try ImageConverter.inspect(output)
-        XCTAssertEqual(inspected.pixelWidth, 40)
-        XCTAssertEqual(inspected.pixelHeight, 80)
+        for orientation in 1...8 {
+            let source = try makeImage(named: "orientation-\(orientation).jpg", type: .jpeg, width: 80, height: 40, orientation: orientation)
+            let imageSource = try XCTUnwrap(CGImageSourceCreateWithURL(source as CFURL, nil))
+            let expected = try XCTUnwrap(CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 80,
+                kCGImageSourceShouldCacheImmediately: true
+            ] as CFDictionary))
+            let output = try XCTUnwrap(ImageConverter.convert(source, destination: root.appendingPathComponent("out"), options: options).output)
+            let outputSource = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
+            let actual = try XCTUnwrap(CGImageSourceCreateImageAtIndex(outputSource, 0, nil))
+            XCTAssertEqual(actual.width, expected.width, "orientation \(orientation) width")
+            XCTAssertEqual(actual.height, expected.height, "orientation \(orientation) height")
+            XCTAssertEqual(try rgbaBytes(actual), try rgbaBytes(expected), "orientation \(orientation) pixels")
+        }
     }
 
     func testCollisionGeneratesSafeName() throws {
@@ -177,5 +187,18 @@ final class ImageConversionTests: XCTestCase {
             CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.1]] as CFDictionary)
         }
         XCTAssertTrue(CGImageDestinationFinalize(destination)); return url
+    }
+
+    private func rgbaBytes(_ image: CGImage) throws -> Data {
+        let bytesPerRow = image.width * 4
+        var bytes = Data(count: bytesPerRow * image.height)
+        try bytes.withUnsafeMutableBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress,
+                  let context = CGContext(data: base, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+                throw ConversionError.encodingFailed
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        return bytes
     }
 }
