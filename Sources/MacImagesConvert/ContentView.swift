@@ -17,7 +17,7 @@ struct ContentView: View {
                     Text("Convert on your Mac. No uploads.").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("0.2.1 beta").font(.caption).foregroundStyle(.secondary)
+                Text("0.2.2 beta").font(.caption).foregroundStyle(.secondary)
             }.padding(20)
             Divider()
             HStack(alignment: .top, spacing: 0) {

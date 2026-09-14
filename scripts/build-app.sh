@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="${0:A:h:h}"
-VERSION="0.2.1-beta"
+VERSION="0.2.2-beta"
 APP_NAME="Mac images convert"
 APP_DIR="$ROOT_DIR/dist/$APP_NAME-$VERSION-macos-arm64.app"
 CONTENTS="$APP_DIR/Contents"

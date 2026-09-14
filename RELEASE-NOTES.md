@@ -1,3 +1,9 @@
+# 0.2.2 beta
+
+- Added **Check for Updates…** to the app menu and Settings.
+- Checks public GitHub Releases without an account or token.
+- Opens the latest DMG download when a newer version is available.
+
 # 0.2.1 beta
 
 Fixes converted images appearing upside down. The decoder now applies the source file's EXIF orientation before resizing and encoding, using Apple's ImageIO rendering path.

@@ -18,7 +18,14 @@ struct MacImagesConvertApp: App {
 
     var body: some Scene {
         WindowGroup("Mac images convert") { ContentView().environmentObject(queue).frame(minWidth: 760, minHeight: 580) }
-            .commands { CommandGroup(replacing: .newItem) { Button("Add Images…") { queue.chooseFiles() }.keyboardShortcut("o") } }
+            .commands {
+                CommandGroup(replacing: .newItem) {
+                    Button("Add Images…") { queue.chooseFiles() }.keyboardShortcut("o")
+                }
+                CommandGroup(after: .appInfo) {
+                    Button("Check for Updates…") { Task { await UpdateChecker.checkAndPresent() } }
+                }
+            }
         Settings { SettingsView().environmentObject(queue) }
     }
 }
@@ -144,4 +151,27 @@ final class ConversionQueue: ObservableObject {
     }
 }
 
-struct SettingsView: View { @EnvironmentObject private var queue: ConversionQueue; var body: some View { Form { Section("Watch folder") { if let folder = queue.watcher.folder { Text(folder.path); Button("Stop watching", role: .destructive) { queue.watcher.stop() } } else { Text("While this app is open, add stable new files from a selected folder.").foregroundStyle(.secondary); Button("Choose watch folder…") { queue.startWatchFolder() } }; Text("Existing files are ignored when a watch starts. Output folders are excluded, and watched jobs never move originals to Trash.").font(.caption).foregroundStyle(.secondary) } }.padding(20).frame(width: 440) } }
+struct SettingsView: View {
+    @EnvironmentObject private var queue: ConversionQueue
+
+    var body: some View {
+        Form {
+            Section("Watch folder") {
+                if let folder = queue.watcher.folder {
+                    Text(folder.path)
+                    Button("Stop watching", role: .destructive) { queue.watcher.stop() }
+                } else {
+                    Text("While this app is open, add stable new files from a selected folder.").foregroundStyle(.secondary)
+                    Button("Choose watch folder…") { queue.startWatchFolder() }
+                }
+                Text("Existing files are ignored when a watch starts. Output folders are excluded, and watched jobs never move originals to Trash.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Updates") {
+                Button("Check for Updates…") { Task { await UpdateChecker.checkAndPresent() } }
+                Text("Checks the public GitHub Releases page. No account or GitHub token is required.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(20).frame(width: 440)
+    }
+}
