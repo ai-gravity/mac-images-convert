@@ -157,6 +157,41 @@ final class ImageConversionTests: XCTestCase {
         setup.limit = "-2"; XCTAssertThrowsError(try setup.resolved(from: base))
     }
 
+    func testImagesCreateOrderedPDFAndApplyEXIFOrientation() throws {
+        let first = try makeImage(named: "page-one.png", type: .png, width: 40, height: 70)
+        let second = try makeImage(named: "page-two.jpg", type: .jpeg, width: 90, height: 50, orientation: 6)
+        var options = PDFOptions()
+        options.filename = "Trip photos.pdf"
+        options.pagePreset = .fitImage
+
+        let output = try ImagePDFCreator.create(from: [first, second], destination: root.appendingPathComponent("pdf"), options: options)
+        XCTAssertEqual(output.lastPathComponent, "Trip photos.pdf")
+        let document = try XCTUnwrap(CGPDFDocument(output as CFURL))
+        XCTAssertEqual(document.numberOfPages, 2)
+
+        let pageOne = try XCTUnwrap(document.page(at: 1)).getBoxRect(.mediaBox)
+        XCTAssertEqual(pageOne.width, 40, accuracy: 0.1)
+        XCTAssertEqual(pageOne.height, 70, accuracy: 0.1)
+        let pageTwo = try XCTUnwrap(document.page(at: 2)).getBoxRect(.mediaBox)
+        XCTAssertEqual(pageTwo.width, 50, accuracy: 0.1, "EXIF orientation should swap the displayed width")
+        XCTAssertEqual(pageTwo.height, 90, accuracy: 0.1, "EXIF orientation should swap the displayed height")
+
+        let collision = try ImagePDFCreator.create(from: [first], destination: root.appendingPathComponent("pdf"), options: options)
+        XCTAssertEqual(collision.lastPathComponent, "Trip photos 1.pdf")
+    }
+
+    func testA4PDFAutomaticallyUsesLandscapeForLandscapeImages() throws {
+        let portrait = try makeImage(named: "portrait-a4.png", type: .png, width: 40, height: 70)
+        let landscape = try makeImage(named: "landscape-a4.png", type: .png, width: 90, height: 50)
+        var options = PDFOptions(); options.pagePreset = .a4
+        let output = try ImagePDFCreator.create(from: [portrait, landscape], destination: root.appendingPathComponent("a4"), options: options)
+        let document = try XCTUnwrap(CGPDFDocument(output as CFURL))
+        let first = try XCTUnwrap(document.page(at: 1)).getBoxRect(.mediaBox)
+        let second = try XCTUnwrap(document.page(at: 2)).getBoxRect(.mediaBox)
+        XCTAssertEqual(first.width, 595, accuracy: 0.1); XCTAssertEqual(first.height, 842, accuracy: 0.1)
+        XCTAssertEqual(second.width, 842, accuracy: 0.1); XCTAssertEqual(second.height, 595, accuracy: 0.1)
+    }
+
     private func makeImage(named name: String, type: UTType, width: Int = 320, height: Int = 200, gps: Bool = false, orientation: Int? = nil) throws -> URL {
         let url = root.appendingPathComponent(name)
         let colorSpace = CGColorSpaceCreateDeviceRGB()

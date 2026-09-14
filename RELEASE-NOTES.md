@@ -1,3 +1,10 @@
+# 0.3.0 beta
+
+- Added **Images to PDF** inside the existing app.
+- Arrange page order before creating the PDF.
+- Choose image-sized pages, A4, or US Letter with automatic portrait and landscape pages.
+- Combine HEIC, JPG, PNG, and static WebP into one PDF and choose the output folder.
+
 # 0.2.2 beta
 
 - Added **Check for Updates…** to the app menu and Settings.

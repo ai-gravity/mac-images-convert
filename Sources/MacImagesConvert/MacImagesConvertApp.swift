@@ -44,6 +44,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name { static let finderFilesReceived = Notification.Name("MacImagesConvert.finderFilesReceived") }
 
+enum OutputMode: String, CaseIterable, Identifiable {
+    case images = "Convert images"
+    case pdf = "Images to PDF"
+    var id: String { rawValue }
+}
+
 @MainActor
 final class ConversionQueue: ObservableObject {
     struct Job: Identifiable {
@@ -59,8 +65,14 @@ final class ConversionQueue: ObservableObject {
     @Published var isPaused = false
     @Published var watcher = WatchFolderMonitor()
     @Published var setup = ConversionSetup()
+    @Published var outputMode: OutputMode = .images
+    @Published var pdfOptions = PDFOptions()
     @Published var message: String?
     var validationMessage: String? {
+        if outputMode == .pdf {
+            let name = pdfOptions.filename.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? "Enter a name for the PDF." : nil
+        }
         do { _ = try setup.resolved(from: options); return nil }
         catch { return error.localizedDescription }
     }
@@ -102,10 +114,17 @@ final class ConversionQueue: ObservableObject {
         }
     }
     func retryFailures() { for index in jobs.indices { if case .failed = jobs[index].state { jobs[index].state = .ready } } }
+    func moveJob(_ id: UUID, by offset: Int) {
+        guard !isRunning, let source = jobs.firstIndex(where: { $0.id == id }) else { return }
+        let destination = source + offset
+        guard jobs.indices.contains(destination) else { return }
+        jobs.swapAt(source, destination)
+    }
     func cancel() { cancellationFlag.cancel(); isPaused = false }
     func start() {
         guard !isRunning else { return }
         guard let destination else { chooseDestination(); return }
+        if outputMode == .pdf { startPDF(destination: destination); return }
         let resolved: ConversionOptions
         do { resolved = try setup.resolved(from: options) }
         catch { message = error.localizedDescription; return }
@@ -133,6 +152,30 @@ final class ConversionQueue: ObservableObject {
                     if error as? ConversionError == .cancelled { jobs[index].state = .ready }
                     else { jobs[index].state = .failed(error.localizedDescription) }
                 }
+            }
+            isRunning = false
+        }
+    }
+    private func startPDF(destination: URL) {
+        let readyIndices = jobs.indices.filter { if case .ready = jobs[$0].state { true } else { false } }
+        guard !readyIndices.isEmpty else { return }
+        cancellationFlag = CancellationFlag()
+        let cancellationFlag = cancellationFlag
+        let sources = readyIndices.map { jobs[$0].url }
+        let options = pdfOptions
+        isRunning = true
+        message = nil
+        for index in readyIndices { jobs[index].state = .converting }
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try ImagePDFCreator.create(from: sources, destination: destination, options: options, shouldCancel: { cancellationFlag.isCancelled }) }
+            }.value
+            switch result {
+            case .success(let output):
+                for index in readyIndices { jobs[index].state = .completed(output) }
+            case .failure(let error):
+                for index in readyIndices { jobs[index].state = cancellationFlag.isCancelled ? .ready : .failed(error.localizedDescription) }
+                if !cancellationFlag.isCancelled { message = error.localizedDescription }
             }
             isRunning = false
         }

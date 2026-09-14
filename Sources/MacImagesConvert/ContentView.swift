@@ -17,7 +17,7 @@ struct ContentView: View {
                     Text("Convert on your Mac. No uploads.").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("0.2.2 beta").font(.caption).foregroundStyle(.secondary)
+                Text("0.3.0 beta").font(.caption).foregroundStyle(.secondary)
             }.padding(20)
             Divider()
             HStack(alignment: .top, spacing: 0) {
@@ -52,6 +52,16 @@ struct ContentView: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 18) {
+            Picker("Task", selection: $queue.outputMode) {
+                ForEach(OutputMode.allCases) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented).labelsHidden()
+            if queue.outputMode == .images { imageSettings }
+            else { pdfSettings }
+        }.disabled(queue.isRunning)
+    }
+
+    private var imageSettings: some View {
+        Group {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Save as").font(.headline)
                 Picker("Output format", selection: $queue.options.format) {
@@ -111,9 +121,33 @@ struct ContentView: View {
                     }))
                 }.padding(.top, 10)
             }
-        }.disabled(queue.isRunning)
+        }
     }
 
+    private var pdfSettings: some View {
+        Group {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("PDF name").font(.headline)
+                TextField("Combined images", text: $queue.pdfOptions.filename)
+                    .textFieldStyle(.roundedBorder)
+                Text("The .pdf extension is added automatically.").font(.caption).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Page size").font(.headline)
+                Picker("Page size", selection: $queue.pdfOptions.pagePreset) {
+                    ForEach(PDFPagePreset.allCases) { preset in Text(preset.rawValue).tag(preset) }
+                }.labelsHidden().frame(maxWidth: .infinity)
+                Text(pdfPageDescription).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Label("One image per page", systemImage: "doc.on.doc").font(.caption.weight(.semibold))
+                Text("Use the arrow buttons beside each image to arrange the PDF pages. HEIC, JPG, PNG, and static WebP can be combined together.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
     private var resizeControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Image dimensions").font(.headline)
@@ -196,9 +230,24 @@ struct ContentView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(queue.jobs) { job in
+                        ForEach(Array(queue.jobs.enumerated()), id: \.element.id) { index, job in
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(job.url.lastPathComponent).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                                HStack {
+                                    if queue.outputMode == .pdf {
+                                        Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                            .frame(width: 22, alignment: .trailing)
+                                    }
+                                    Text(job.url.lastPathComponent).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                                    Spacer(minLength: 4)
+                                    if queue.outputMode == .pdf {
+                                        Button { queue.moveJob(job.id, by: -1) } label: { Image(systemName: "arrow.up") }
+                                            .buttonStyle(.borderless).disabled(index == 0 || queue.isRunning)
+                                            .accessibilityLabel("Move page up")
+                                        Button { queue.moveJob(job.id, by: 1) } label: { Image(systemName: "arrow.down") }
+                                            .buttonStyle(.borderless).disabled(index == queue.jobs.count - 1 || queue.isRunning)
+                                            .accessibilityLabel("Move page down")
+                                    }
+                                }
                                 if let info = job.inspection {
                                     Text("Original: \(info.bytesText) · \(info.dimensionsText)").font(.caption).foregroundStyle(.secondary)
                                 }
@@ -235,23 +284,47 @@ struct ContentView: View {
                 Button(queue.destination == nil ? "Choose folder…" : "Change…") { queue.chooseDestination() }.disabled(queue.isRunning)
             }
             HStack {
-                Text(queue.isRunning ? "\(queue.completedCount) saved" : "\(queue.readyCount) ready · Originals \(queue.options.moveOriginalToTrash ? "move to Trash after saving" : "stay in place")")
+                Text(footerStatus)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 Spacer()
                 if queue.isRunning {
                     ProgressView(value: queue.progress).frame(width: 90)
-                    Button(queue.isPaused ? "Resume" : "Pause") { queue.isPaused.toggle() }
+                    if queue.outputMode == .images {
+                        Button(queue.isPaused ? "Resume" : "Pause") { queue.isPaused.toggle() }
+                    }
                     Button("Cancel") { queue.cancel() }
                 } else if queue.readyCount == 0 && queue.completedCount > 0 {
                     Button("Convert these again") { queue.convertAgain() }
                 } else {
-                    Button(queue.destination == nil ? "Choose folder to continue…" : "Convert \(queue.readyCount) \(queue.readyCount == 1 ? "image" : "images")") {
+                    Button(primaryButtonTitle) {
                         focusedField = nil
                         queue.start()
                     }.buttonStyle(.borderedProminent).disabled(queue.readyCount == 0 || queue.validationMessage != nil)
                 }
             }
             if let message = queue.message { Text(message).font(.caption).foregroundStyle(.red) }
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        if queue.destination == nil { return "Choose folder to continue…" }
+        if queue.outputMode == .pdf { return "Create PDF from \(queue.readyCount) \(queue.readyCount == 1 ? "image" : "images")" }
+        return "Convert \(queue.readyCount) \(queue.readyCount == 1 ? "image" : "images")"
+    }
+
+    private var footerStatus: String {
+        if queue.isRunning {
+            return queue.outputMode == .pdf ? "Creating PDF…" : "\(queue.completedCount) saved"
+        }
+        if queue.outputMode == .pdf { return "\(queue.readyCount) ready · Originals stay in place" }
+        return "\(queue.readyCount) ready · Originals \(queue.options.moveOriginalToTrash ? "move to Trash after saving" : "stay in place")"
+    }
+
+    private var pdfPageDescription: String {
+        switch queue.pdfOptions.pagePreset {
+        case .fitImage: "Each PDF page follows the image’s dimensions. No cropping or border is added."
+        case .a4: "Fits each image on an A4 page with a small border. Landscape photos use landscape pages automatically."
+        case .letter: "Fits each image on a US Letter page with a small border. Landscape photos use landscape pages automatically."
         }
     }
 
